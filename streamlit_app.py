@@ -5,11 +5,11 @@ from datetime import datetime
 from dateutil import tz
 
 CITIES = {
-    "서울(Seoul)":   (37.5665, 126.9780),
-    "수원(Suwon)":   (37.2636, 127.0286),
-    "더블린(Dublin)": (53.3498, -6.2603),
-    "로마(Rome)": (53.3498, -6.2603),
-    "쿠스코(Cusco)":  (-13.1631, -72.5450),
+    "서울(Seoul)":   {"coords": (37.5665, 126.9780), "tz": "Asia/Seoul"},
+    "수원(Suwon)":   {"coords": (37.2636, 127.0286), "tz": "Asia/Seoul"},
+    "더블린(Dublin)": {"coords": (53.3498, -6.2603), "tz": "Europe/Dublin"},
+    "로마(Rome)":     {"coords": (41.9028, 12.4964), "tz": "Europe/Rome"},
+    "쿠스코(Cusco)":  {"coords": (-13.1631, -72.5450), "tz": "America/Lima"},
 }
 
 WEATHERCODE_DESC = {
@@ -26,15 +26,27 @@ WEATHERCODE_DESC = {
     95: "천둥번개", 96: "우박 동반 번개(약~보통)", 99: "우박 동반 번개(강함)"
 }
 
-st.set_page_config(page_title="Daily Weather (KST)", page_icon="🌤️")
+st.set_page_config(page_title="Daily Weather", page_icon="🌤️")
 st.title("🌤️ 오늘의 날씨")
 
 city_label = st.selectbox("도시 선택", list(CITIES.keys()), index=0)
-lat, lon = CITIES[city_label]
+lat, lon = CITIES[city_label]["coords"]
+city_tz = tz.gettz(CITIES[city_label]["tz"])
 
+# Local Time (선택 도시 현지시간)
+local_time = datetime.now(tz=city_tz)
+local_date = local_time.date().isoformat()
+local_time_str = local_time.strftime("%Y-%m-%d %H:%M:%S")
+
+# KST Time
 kst = tz.gettz("Asia/Seoul")
+kst_time = datetime.now(tz=kst).strftime("%Y-%m-%d %H:%M:%S")
+
+st.write(f"**📍 도시 현지 날짜/시간:** {local_time_str} ({CITIES[city_label]['tz']})")
+st.write(f"**🇰🇷 한국 시간(KST):** {kst_time}")
+
+# API 호출은 KST 날짜 기준 유지
 today = datetime.now(tz=kst).date().isoformat()
-st.write(f"**오늘 날짜:** {today}")
 
 url = (
     "https://api.open-meteo.com/v1/forecast"
@@ -58,7 +70,7 @@ try:
         wcode = daily.get("weathercode", [None])[i]
         desc = WEATHERCODE_DESC.get(int(wcode) if wcode is not None else -1, "")
 
-        st.subheader(f"{city_label} • {today}")
+        st.subheader(f"{city_label} • {today} (KST 기준 데이터)")
         st.metric("최고기온(°C)", tmax)
         st.metric("최저기온(°C)", tmin)
         st.metric("강수량 합계(mm)", psum)
@@ -68,4 +80,3 @@ try:
         st.error(f"API 응답에 오늘({today})이 없습니다. 응답 날짜: {times}")
 except Exception as e:
     st.error(f"조회 실패: {e}")
-
