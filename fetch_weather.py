@@ -9,10 +9,9 @@ import requests
 # 기본 도시 좌표 (원하면 자유롭게 추가/수정)
 CITIES = {
     "seoul":    {"name_kr": "서울",    "lat": 37.5665, "lon": 126.9780},
-    "suwon":    {"name_kr": "수원",    "lat": 37.2636, "lon": 127.0286},
     "dublin":   {"name_kr": "더블린(아일랜드)",    "lat": 53.3498, "lon": -6.2603},
     "rome":  {"name_kr": "로마(이탈리아)",    "lat": 53.3498, "lon": -6.2603},
-    "cusco":  {"name_kr": "쿠스코(페루)",    "lat": -13.1631, "lon": -72.5450},
+    "machu_picchu":  {"name_kr": "마추피추(페루)",    "lat": -13.1631, "lon": -72.5450},
 }
 
 WEATHERCODE_DESC = {
@@ -117,3 +116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
