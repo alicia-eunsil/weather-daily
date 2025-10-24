@@ -6,10 +6,9 @@ from dateutil import tz
 
 CITIES = {
     "서울(Seoul)":   {"coords": (37.5665, 126.9780), "tz": "Asia/Seoul"},
-    "수원(Suwon)":   {"coords": (37.2636, 127.0286), "tz": "Asia/Seoul"},
     "더블린(Dublin)": {"coords": (53.3498, -6.2603), "tz": "Europe/Dublin"},
     "로마(Rome)":     {"coords": (41.9028, 12.4964), "tz": "Europe/Rome"},
-    "쿠스코(Cusco)":  {"coords": (-13.1631, -72.5450), "tz": "America/Lima"},
+    "마추피추(machu_picchu)":  {"coords": (-13.1631, -72.5450), "tz": "America/Lima"},
 }
 
 WEATHERCODE_DESC = {
@@ -80,3 +79,4 @@ try:
         st.error(f"API 응답에 오늘({today})이 없습니다. 응답 날짜: {times}")
 except Exception as e:
     st.error(f"조회 실패: {e}")
+
