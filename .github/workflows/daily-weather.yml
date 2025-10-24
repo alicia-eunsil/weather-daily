@@ -2,12 +2,12 @@ name: Daily Weather @11:30 KST
 
 on:
   schedule:
-    # KST 06:00 = UTC 21:00 (전날)
+    # KST 11:30 = UTC 02:30
     - cron: "30 2 * * *"
-  workflow_dispatch: {}   # 수동 실행 버튼(테스트용)
+  workflow_dispatch: {}
 
 permissions:
-  contents: write  # 커밋/푸시 권한
+  contents: write
 
 jobs:
   fetch:
@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"        # ← pip 캐시 (선택이지만 추천)
 
       - name: Install deps
         run: |
@@ -30,16 +31,12 @@ jobs:
         run: |
           mkdir -p data logs
 
-      # 원하는 도시 키만 추가/수정하세요 (CITIES 딕셔너리 기준 키)
       - name: Run fetch (seoul)
         run: python fetch_weather.py --city seoul
-
       - name: Run fetch (dublin)
         run: python fetch_weather.py --city dublin
-
       - name: Run fetch (rome)
         run: python fetch_weather.py --city rome
-
       - name: Run fetch (machu_picchu)
         run: python fetch_weather.py --city machu_picchu
 
