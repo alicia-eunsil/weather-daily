@@ -7,9 +7,9 @@ from dateutil import tz
 CITIES = {
     "서울(Seoul)":   (37.5665, 126.9780),
     "수원(Suwon)":   (37.2636, 127.0286),
-    "인천(Incheon)": (37.4563, 126.7052),
-    "부천(Bucheon)": (37.5034, 126.7660),
-    "용인(Yongin)":  (37.2411, 127.1776),
+    "더블린(Dublin)": (53.3498, -6.2603),
+    "로마(Rome)": (53.3498, -6.2603),
+    "쿠스코(Cusco)":  (-13.1631, -72.5450),
 }
 
 WEATHERCODE_DESC = {
@@ -27,7 +27,7 @@ WEATHERCODE_DESC = {
 }
 
 st.set_page_config(page_title="Daily Weather (KST)", page_icon="🌤️")
-st.title("🌤️ 오늘의 날씨(Asia/Seoul)")
+st.title("🌤️ 오늘의 날씨")
 
 city_label = st.selectbox("도시 선택", list(CITIES.keys()), index=0)
 lat, lon = CITIES[city_label]
@@ -68,3 +68,4 @@ try:
         st.error(f"API 응답에 오늘({today})이 없습니다. 응답 날짜: {times}")
 except Exception as e:
     st.error(f"조회 실패: {e}")
+
