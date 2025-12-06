@@ -1,0 +1,5 @@
+city_key,city_name_kr,date,tmax_c,tmin_c,precip_mm,precip_prob_max_pct,weathercode,weather_desc
+seoul,서울,2025-12-06,6.2,-3.0,0.7,18,51,약한 이슬비
+dublin,더블린(아일랜드),2025-12-06,11.6,8.8,10.8,100,63,보통 비
+rome,로마(이탈리아),2025-12-06,11.6,8.8,10.8,100,63,보통 비
+machu_picchu,마추피추(페루),2025-12-06,17.3,10.9,5.5,53,95,천둥번개
