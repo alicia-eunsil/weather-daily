@@ -518,7 +518,7 @@ st.session_state.selected_category = selected_category
 selected_filename = EXCEL_MAP[selected_category]
 excel_path = Path(selected_filename)
 
-st.markdown(f"#### 현재: `{selected_category}`")
+#st.markdown(f"#### 현재: `{selected_category}`")
 
 # ======================================
 # 6. 사이드바: 선택 파일 다운로드 + 전체 갱신 버튼

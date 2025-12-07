@@ -103,10 +103,74 @@ def get_close_data(filename: str):
 # =========================
 # 4. 기존 시트 삭제 후 새로 생성
 # =========================
-def create_or_clear_sheet(wb, sheet_name):
-    if sheet_name in wb.sheetnames:
-        wb.remove(wb[sheet_name])
-    return wb.create_sheet(sheet_name)
+def get_existing_dates(sheet):
+    dates = []
+    for col in range(3, sheet.max_column + 1):
+        val = sheet.cell(row=1, column=col).value
+        if val is None:
+            continue
+        try:
+            dates.append(int(val))
+        except:
+            continue
+    return dates
+
+
+def ensure_score_sheet(wb, sheet_name, stocks):
+    if sheet_name not in wb.sheetnames:
+        sheet = wb.create_sheet(sheet_name)
+        sheet.cell(row=1, column=1, value="종목명")
+        sheet.cell(row=1, column=2, value="종목코드")
+        sheet.cell(row=1, column=1).font = Font(bold=True)
+        sheet.cell(row=1, column=2).font = Font(bold=True)
+        sheet.cell(row=1, column=1).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        sheet.cell(row=1, column=2).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+
+        code_to_row = {}
+        for idx, stock in enumerate(stocks, start=2):
+            code = str(stock["code"])
+            sheet.cell(row=idx, column=1, value=stock["name"])
+            sheet.cell(row=idx, column=2, value=code)
+            code_to_row[code] = idx
+
+        return sheet, [], code_to_row, []
+
+    sheet = wb[sheet_name]
+    existing_dates = get_existing_dates(sheet)
+
+    # 보정: 1,2열 헤더 강조
+    sheet.cell(row=1, column=1, value="종목명").font = Font(bold=True)
+    sheet.cell(row=1, column=2, value="종목코드").font = Font(bold=True)
+    sheet.cell(row=1, column=1).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+    sheet.cell(row=1, column=2).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+
+    code_to_row = {}
+    new_codes = []
+    max_row = sheet.max_row
+    for row in range(2, max_row + 1):
+        code = sheet.cell(row=row, column=2).value
+        if code is None:
+            continue
+        code_to_row[str(code)] = row
+
+    for stock in stocks:
+        code = str(stock["code"])
+        if code not in code_to_row:
+            max_row += 1
+            sheet.cell(row=max_row, column=1, value=stock["name"])
+            sheet.cell(row=max_row, column=2, value=code)
+            code_to_row[code] = max_row
+            new_codes.append(code)
+
+    return sheet, existing_dates, code_to_row, new_codes
+
+
+def calc_score_for_index(prices, window, idx_in_valid, calc_func):
+    target_idx = (window - 1) + idx_in_valid
+    if target_idx >= len(prices):
+        return None
+    sub_prices = prices[:target_idx + 1]
+    return calc_func(sub_prices, window)
 
 
 # =========================
@@ -122,44 +186,53 @@ def save_score_sheet(filename, dates, stocks, window, sheet_name, calc_func):
     # window일 이후 날짜만 계산됨
     valid_dates = dates[window - 1:]
 
-    sheet = create_or_clear_sheet(wb, sheet_name)
+    sheet, existing_dates, code_to_row, new_codes = ensure_score_sheet(wb, sheet_name, stocks)
+    stock_map = {str(stock["code"]): stock for stock in stocks}
+    existing_count = len(existing_dates)
 
-    # 헤더
-    sheet.cell(row=1, column=1, value="종목명").font = Font(bold=True)
-    sheet.cell(row=1, column=2, value="종목코드").font = Font(bold=True)
+    # 새로 추가된 종목은 기존 열도 채워준다.
+    if new_codes and existing_count > 0:
+        for code in new_codes:
+            stock = stock_map.get(code)
+            if not stock:
+                continue
+            row_idx = code_to_row[code]
+            prices = stock["prices"]
+            for idx_global in range(existing_count):
+                col_idx = 3 + idx_global
+                if sheet.cell(row=row_idx, column=col_idx).value not in (None, ""):
+                    continue
+                score = calc_score_for_index(prices, window, idx_global, calc_func)
+                if score is not None:
+                    sheet.cell(row=row_idx, column=col_idx, value=score)
 
-    sheet.cell(row=1, column=1).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
-    sheet.cell(row=1, column=2).fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+    if existing_count >= len(valid_dates):
+        wb.save(filename)
+        print(f"✅ {sheet_name}: 신규 날짜 없음 ({filename})")
+        return
 
-    for idx, d in enumerate(valid_dates, start=3):
-        c = sheet.cell(row=1, column=idx)
-        c.value = d
-        c.font = Font(bold=True)
-        c.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+    for idx_global in range(existing_count, len(valid_dates)):
+        date_val = valid_dates[idx_global]
+        col_idx = 3 + idx_global
+        header_cell = sheet.cell(row=1, column=col_idx)
+        header_cell.value = date_val
+        header_cell.font = Font(bold=True)
+        header_cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+        sheet.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 10
 
-    # 데이터 쓰기
-    for row_idx, stock in enumerate(stocks, start=2):
-        sheet.cell(row=row_idx, column=1, value=stock["name"])
-        sheet.cell(row=row_idx, column=2, value=stock["code"])
-
-        prices = stock["prices"]
-
-        for j, d in enumerate(valid_dates):
-            full_index = dates.index(d)
-            sub_prices = prices[:full_index + 1]
-
-            score = calc_func(sub_prices, window)
+        for code, row_idx in code_to_row.items():
+            stock = stock_map.get(code)
+            if not stock:
+                continue
+            score = calc_score_for_index(stock["prices"], window, idx_global, calc_func)
             if score is not None:
-                sheet.cell(row=row_idx, column=3 + j, value=score)
+                sheet.cell(row=row_idx, column=col_idx, value=score)
 
-    # 열 너비
     sheet.column_dimensions["A"].width = 20
     sheet.column_dimensions["B"].width = 12
-    for col in range(3, 3 + len(valid_dates)):
-        sheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 10
 
     wb.save(filename)
-    print(f"✅ {sheet_name} 저장 완료 ({filename})")
+    print(f"✅ {sheet_name} 업데이트 완료 ({filename}, 신규 날짜 {len(valid_dates) - existing_count}개)")
 
 
 # =========================
