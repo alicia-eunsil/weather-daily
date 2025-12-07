@@ -1,855 +1,853 @@
-import streamlit as st
-import subprocess
-import sys
-import pandas as pd
+import json
+import requests
+from datetime import datetime, timedelta
 import openpyxl
-from pathlib import Path
-import bcrypt
-from datetime import datetime, date, timedelta
-import json  # 🔥 4개 엑셀 매핑용
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+import time
 
 
-# ======================================
-# 0. 인증 (간단 비밀번호)
-# ======================================
-ACCESS_CODE_HASH = b"$2b$12$gDBpQYK.g938H.8cNwLeUu/VRidCP1GxqusJiEQzVnvaSrG4CBE6K"
+# =========================
+# 0. 설정/공통 유틸 함수들
+# =========================
 
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if not st.session_state["authenticated"]:
-    st.title("🔒 Access Required")
-    st.write("Please enter the access code to open the dashboard.")
-
-    with st.form("auth_form"):
-        code = st.text_input("Enter access code", type="password")
-        submitted = st.form_submit_button("Submit")
-
-    if submitted:
-        if bcrypt.checkpw(code.encode(), ACCESS_CODE_HASH):
-            st.session_state["authenticated"] = True
-            st.success("Access granted")
-            st.rerun()
-        else:
-            st.error("Invalid code")
-
-    st.stop()
-
-# ======================================
-# 페이지 설정
-# ======================================
-st.set_page_config(page_title="주식 데이터 대시보드", page_icon="📈", layout="wide")
-
-# ======================================
-# 1. 전역 상태 변수
-# ======================================
-if "run_update" not in st.session_state:
-    st.session_state.run_update = False
-if "data_loaded" not in st.session_state:
-    st.session_state.data_loaded = True
-
-# 🔥 종합 탭 날짜 확장용
-if "show_days" not in st.session_state:
-    st.session_state.show_days = 10  # 시작: 최근 10일
-
-# 🔥 원자료 탭 날짜 확장용
-if "show_days_raw" not in st.session_state:
-    st.session_state.show_days_raw = 10  # 시작: 최근 10일
-
-# 🔥 파일 선택 상태
-JSON_PATH = "stock_file_map.json"
-if "selected_category" not in st.session_state:
-    # JSON 로드해서 첫 번째 항목을 기본 선택값으로
+def load_api_secrets(file_path='secrets.json'):
+    """API 키와 시크릿을 파일에서 로드"""
     try:
-        with open(JSON_PATH, "r", encoding="utf-8") as f:
-            _tmp_map = json.load(f)
-        if isinstance(_tmp_map, dict) and _tmp_map:
-            st.session_state.selected_category = list(_tmp_map.keys())[0]
-        else:
-            st.session_state.selected_category = None
-    except:
-        st.session_state.selected_category = None
-
-
-# ======================================
-# 2. 날짜/포맷 유틸 함수
-# ======================================
-def _to_datetime(v):
-    """엑셀/문자열/숫자 등 다양한 형태의 날짜를 datetime으로 변환"""
-    if isinstance(v, (datetime, date)):
-        return datetime(v.year, v.month, v.day)
-
-    if isinstance(v, (int, float)):
-        iv = int(v)
-        digits = str(iv)
-        if len(digits) == 8 and digits.isdigit():
-            try:
-                return datetime.strptime(digits, "%Y%m%d")
-            except:
-                pass
-        base = datetime(1899, 12, 30)
-        try:
-            return base + timedelta(days=iv)
-        except:
-            return None
-
-    s = str(v).strip()
-    if not s:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"에러: {file_path} 파일을 찾을 수 없습니다.")
         return None
 
-    for fmt in ("%Y-%m-%d", "%Y.%m.%d.", "%Y.%m.%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(s, fmt)
-        except:
-            pass
 
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if len(digits) == 8:
-        try:
-            return datetime.strptime(digits, "%Y%m%d")
-        except:
-            pass
-
-    return None
+def load_file_config(file_path='stock_file_map.json'):
+    """자산별 엑셀 파일 매핑 정보 로드"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"에러: {file_path} 파일을 찾을 수 없습니다.")
+        return None
 
 
-def format_excel_date(v):
-    """_to_datetime로 바꾼 날짜를 YYYY.MM.DD. 형식 문자열로 변환"""
-    dt = _to_datetime(v)
-    if dt:
-        return dt.strftime("%Y.%m.%d.")
-    s = str(v)
-    s = s.replace("-", ".").replace("/", ".")
-    if not s.endswith("."):
-        s += "."
-    return s
+def get_token(api_key, api_secret, domain):
+    """한국투자증권 API 토큰 발급 요청"""
+    url = f"{domain}/oauth2/tokenP"
+
+    headers = {
+        "content-type": "application/json",
+        "appKey": api_key,
+        "appSecret": api_secret
+    }
+
+    data = {
+        "grant_type": "client_credentials",
+        "appkey": api_key,
+        "appsecret": api_secret
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=data)
+
+        if resp.status_code != 200:
+            print(f"❌ 토큰 요청 실패: HTTP {resp.status_code}")
+            print(resp.text)
+            return None
+
+        token_data = resp.json()
+        if not token_data or 'access_token' not in token_data:
+            print("❌ 토큰 정보가 응답에 없습니다")
+            return None
+
+        print("✅ 토큰 발급 성공!")
+        return token_data
+
+    except requests.exceptions.RequestException as e:
+        print(f"❌ 토큰 요청 실패: {str(e)}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"서버 응답: {e.response.text}")
+        return None
 
 
-def _format_z_cell(v):
-    val = pd.to_numeric(v, errors="coerce")
-    if pd.isna(val):
-        return "-"
-    out = f"{val:.0f}"
-    if val > 100:
-        out += " 🔴"
-    elif val < -100:
-        out += " 🔵"
-    return out
+# =========================
+# 1. 시세 조회 함수들
+# =========================
 
-
-def _format_s_cell(v):
-    val = pd.to_numeric(v, errors="coerce")
-    if pd.isna(val):
-        return "-"
-    out = f"{val:.0f}"
-    if abs(val - 100) < 0.1:
-        out += " 🔴"
-    elif abs(val - 0) < 0.1:
-        out += " 🔵"
-    return out
-
-
-def _format_q_cell(v):
-    val = pd.to_numeric(v, errors="coerce")
-    if pd.isna(val):
-        return "-"
-    out = f"{val:.0f}"
-    if val > 100:
-        out += " 🔴"
-    elif val < 25:
-        out += " 🔵"
-    return out
-
-# ======================================
-# 3. 뷰 렌더링 함수들
-# ======================================
-def render_total_view(indicator_df, selected_labels, indicator_range_msg, total_days, index_df=None):
+def fetch_stock_daily_history(access_token, domain, symbol, start_date, end_date,
+                              app_key=None, app_secret=None):
     """
-    1️⃣ 종합 탭
-    - 멀티헤더(날짜×지표) 구조
-    - 맨 아래 평균 행
-    - 그 아래 KOSPI/KOSDAQ/KOSPI200 행 추가
+    국내 주식/ETF 기간별 시세 (일별)
+    /uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice
     """
-    if indicator_df is None:
-        st.warning("⚠️ 종합 데이터를 불러올 수 없습니다.")
-        return
+    endpoint = f"{domain}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 
-    st.markdown("### 🔍 필터 옵션 (종합)")
-    c1, c2 = st.columns(2)
-    with c1:
-        search = st.text_input("🔎 종목명/종목코드 검색", key="search_total")
-    with c2:
-        sort_by = st.selectbox("정렬 기준", ["종목코드", "종목명"], key="sort_total")
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",    # 주식 시장 구분
+        "FID_INPUT_ISCD": symbol,         # 종목코드
+        "FID_PERIOD_DIV_CODE": "D",       # 기간 구분 (일)
+        "FID_ORG_ADJ_PRC": "1",           # 수정주가 여부
+        "FID_INPUT_DATE_1": start_date,   # 조회 시작일
+        "FID_INPUT_DATE_2": end_date,     # 조회 종료일
+        "FID_COMP_ICD": symbol,
+    }
 
-    # 검색 적용
-    df_f = indicator_df.copy()
-    if search:
-        df_f = df_f[
-            df_f["종목명"].astype(str).str.contains(search, case=False) |
-            df_f["종목코드"].astype(str).str.contains(search, case=False)
-        ]
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {access_token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "FHKST03010100",     # 주식 일별 시세
+        "custtype": "P",
+        "seq_no": "0",
+        "locale": "ko_KR",
+    }
 
-    df_f = df_f.sort_values(by=sort_by)
+    try:
+        resp = requests.get(endpoint, headers=headers, params=params, timeout=10)
 
-    st.info(indicator_range_msg)
+        if resp.status_code != 200:
+            print(f"❌ 국내 시세 HTTP {resp.status_code} 에러: {resp.text}")
+            return None
 
-    # --------------------------------------
-    # 🔥 멀티헤더 생성 (1행: 날짜, 2행: 지표명)
-    # --------------------------------------
-    metrics = ["Z20", "Z60", "Z120", "S20", "S60", "S120", "GAP", "QUANT", "STD"]
-    base_cols = ["종목코드", "종목명"]
-    df_show = df_f[base_cols].copy()
+        data = resp.json()
+        if not data or 'output2' not in data or not data['output2']:
+            # print("❌ 국내 시세 데이터가 비어있습니다")
+            return None
 
-    col_tuples = [("", "종목코드"), ("", "종목명")]
+        daily_data = []
+        for item in data['output2']:
+            daily_data.append({
+                'date': item.get('stck_bsop_date', ''),
+                'open': int(item.get('stck_oprc', '0') or 0),
+                'high': int(item.get('stck_hgpr', '0') or 0),
+                'low': int(item.get('stck_lwpr', '0') or 0),
+                'close': int(item.get('stck_clpr', '0') or 0),
+                'volume': int(item.get('acml_vol', '0') or 0)
+            })
 
-    # 날짜 × 지표 조합 생성 (값 없으면 '-' 처리)
-    for lbl in selected_labels:
-        for m in metrics:
-            key = (lbl, m)
-            if key in df_f.columns:
-                df_show[(lbl, m)] = df_f[key]
-            else:
-                df_show[(lbl, m)] = "-"
-            col_tuples.append((lbl, m))
+        # 과거 → 최신 정렬
+        daily_data.sort(key=lambda x: x['date'])
+        return daily_data
 
-    df_show.columns = pd.MultiIndex.from_tuples(col_tuples)
+    except Exception as e:
+        print(f"❌ 국내 시세 조회 중 에러: {str(e)}")
+        return None
 
-    # --------------------------------------
-    # 🔥 평균 행 추가 (맨 마지막 행)
-    # --------------------------------------
-    avg_row = []
-    for col in df_show.columns:
-        if col == ("", "종목코드"):
-            avg_row.append("AVG")
-        elif col == ("", "종목명"):
-            avg_row.append("평균")
-        else:
-            lbl, m = col
-            key = (lbl, m)
-            if key in df_f.columns:
-                s = pd.to_numeric(df_f[key], errors="coerce")
-                avg_val = s.mean(skipna=True)
-                avg_row.append(f"{avg_val:.2f}")
-            else:
-                avg_row.append(None)
 
-    df_show.loc[len(df_show)] = avg_row  # 평균 행 추가
+def fetch_overseas_daily_history(access_token, domain, market_code, symbol,
+                                 start_date, end_date, app_key=None, app_secret=None):
+    """
+    해외 주식/ETF 기간별 시세 (일/주/월)
+    /uapi/overseas-price/v1/quotations/dailyprice
+    - 여기서는 일봉(GUBN=0), BYMD=end_date 기준으로 최근 100개 받아서
+      date 필터링(start_date~end_date)만 적용
+    """
+    endpoint = f"{domain}/uapi/overseas-price/v1/quotations/dailyprice"
 
-    # --------------------------------------
-    # Z/S/Q/GAP 포맷 이모지 적용
-    # --------------------------------------
-    for lbl in selected_labels:
-        for m in ["Z20", "Z60", "Z120"]:
-            col = (lbl, m)
-            if col in df_show.columns:
-                df_show[col] = df_show[col].apply(_format_z_cell)
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {access_token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "HHDFS76240000",   # 해외 주식 기간별 시세
+        "custtype": "P",
+    }
 
-        for m in ["S20", "S60", "S120"]:
-            col = (lbl, m)
-            if col in df_show.columns:
-                df_show[col] = df_show[col].apply(_format_s_cell)
+    params = {
+        "AUTH": "",
+        "EXCD": market_code,   # 예: "NAS"
+        "SYMB": symbol,        # 예: "AAPL"
+        "GUBN": "0",           # 0: 일, 1: 주, 2: 월
+        "BYMD": end_date,      # 기준일 (이 날 포함 과거 방향 최대 100개)
+        "MODP": "0",           # 0: 원주가, 1: 수정주가
+        # "KEYB": ""           # 연속조회시 사용, 여기서는 생략
+    }
 
-        for metric in ["GAP", "STD"]:
-            col = (lbl, metric)
-            if col in df_show.columns:
-                df_show[col] = df_show[col].apply(
-                    lambda v: "-" if pd.isna(pd.to_numeric(v, errors="coerce")) else v
-                )
+    try:
+        resp = requests.get(endpoint, headers=headers, params=params, timeout=10)
 
-        for m in ["QUANT"]:
-            col = (lbl, m)
-            if col in df_show.columns:
-                df_show[col] = df_show[col].apply(_format_q_cell)
+        if resp.status_code != 200:
+            print(f"❌ 해외 시세 HTTP {resp.status_code} 에러: {resp.text}")
+            return None
 
-    # --------------------------------------
-    # 🔽 지수(KOSPI/KOSDAQ/KOSPI200) 행 추가
-    # --------------------------------------
-    if index_df is not None and not index_df.empty:
-        for _, idx_row in index_df.iterrows():
-            new_row_vals = []
-            used_dates = set()  # 같은 날짜에 한 번만 값 넣기 위한 기록
+        data = resp.json()
+        rows = data.get("output2")
+        if not rows:
+            # print("❌ 해외 시세 데이터가 비어있습니다")
+            return None
 
-            for col in df_show.columns:
-                if col == ("", "종목코드"):
-                    new_row_vals.append(idx_row.get("업종코드", ""))
-                elif col == ("", "종목명"):
-                    new_row_vals.append(idx_row.get("업종명", ""))
+        daily_data = []
+        for item in rows:
+            d = item.get("xymd")   # 날짜 (YYYYMMDD)
+            if not d:
+                continue
+
+            # 필드명은 실제 응답에 따라 필요시 한번 확인
+            daily_data.append({
+                "date": d,
+                "open": float(item.get("open", 0) or 0),
+                "high": float(item.get("high", 0) or 0),
+                "low": float(item.get("low", 0) or 0),
+                "close": float(item.get("clos", 0) or 0),
+                "volume": int(item.get("tvol", 0) or 0),
+            })
+
+        # 과거 → 최신
+        daily_data.sort(key=lambda x: x["date"])
+
+        # start_date~end_date로 필터링
+        if start_date:
+            daily_data = [d for d in daily_data if start_date <= d["date"] <= end_date]
+
+        return daily_data
+
+    except Exception as e:
+        print(f"❌ 해외 시세 조회 중 에러: {str(e)}")
+        return None
+
+
+# =========================
+# 2. 엑셀 관련 함수들
+# =========================
+
+def load_stock_list(filename, market="KR"):
+    """
+    Excel 파일에서 종목 목록을 읽어옵니다.
+    - market="KR" → 코드 6자리 zfill
+    - market="US" → 코드 그대로 사용
+    """
+    try:
+        wb = openpyxl.load_workbook(filename)
+        if "종목" not in wb.sheetnames:
+            print(f"\n❌ Excel 파일({filename})에 '종목' 시트가 없습니다.")
+            return None
+        sheet = wb["종목"]
+
+        stocks = []
+        for row in sheet.iter_rows(min_row=2):  # 헤더 제외
+            if row[0].value and row[1].value:
+                raw_code = str(row[1].value).strip()
+                if market == "KR":
+                    code = raw_code.zfill(6)
                 else:
-                    lbl, m = col
-                    if lbl not in used_dates:
-                        val = idx_row.get(lbl, None)
-                        new_row_vals.append(val if pd.notna(val) else "")
-                        used_dates.add(lbl)
-                    else:
-                        new_row_vals.append("")
+                    code = raw_code
 
-            df_show.loc[len(df_show)] = new_row_vals  # 지수 행 추가
+                stocks.append({
+                    'name': row[0].value,
+                    'code': code
+                })
 
-    # 인덱스 설정 (종목코드·종목명)
-    df_show = df_show.set_index([("", "종목코드"), ("", "종목명")])
+        print(f"\n[{filename}]에서 읽어온 종목 목록 ({market}):")
+        for stock in stocks:
+            print(f"  • {stock['name']} (코드: {stock['code']})")
 
-    st.dataframe(
-        df_show,
-        use_container_width=True,
-        height=600,
-    )
+        return stocks
 
-    # 🔥 과거 확장 버튼 (종합)
-    if st.button("⬅ 과거 10일 더보기(종합)", disabled=(total_days <= st.session_state.show_days)):
-        st.session_state.show_days = min(st.session_state.show_days + 10, total_days)
-        st.rerun()
+    except Exception as e:
+        print(f"\n❌ Excel 파일 읽기 실패({filename}): {str(e)}")
+        return None
 
 
-def render_metric_view(indicator_df, selected_labels):
+def save_history_to_excel(data_list, filename, market="KR"):
     """
-    2️⃣ 지표별 탭:
-    - 1열: 종목코드
-    - 2열: 종목명
-    - 이후: 날짜별 선택 지표값
+    각 종목의 일별 OHLC 데이터를
+    시가/고가/저가/종가/거래량 탭으로 나누어 저장.
+    - 행: 종목
+    - 열: 일자
+    market="KR"이면 코드 6자리, "US"면 그대로.
     """
-    st.subheader("📈 지표 선택")
+    try:
+        wb = openpyxl.load_workbook(filename)
+    except FileNotFoundError:
+        wb = openpyxl.Workbook()
+        if 'Sheet' in wb.sheetnames:
+            wb.remove(wb['Sheet'])
 
-    if indicator_df is None or len(indicator_df) == 0:
-        st.warning("⚠️ 지표별 데이터를 불러올 수 없습니다.")
+    # 모든 날짜 수집
+    all_dates = set()
+    for stock_data in data_list:
+        if stock_data['history']:
+            for daily in stock_data['history']:
+                all_dates.add(daily['date'])
+
+    sorted_dates = sorted(list(all_dates))
+    if not sorted_dates:
+        print("\n❌ 저장할 데이터가 없습니다.")
         return
 
-    metric_options = ["Z20", "Z60", "Z120",
-                      "S20", "S60", "S120",
-                      "GAP", "QUANT", "STD"]
-
-    # 실제 존재하는 지표만
-    available = []
-    for m in metric_options:
-        if any(((lbl, m) in indicator_df.columns) for lbl in selected_labels):
-            available.append(m)
-
-    if not available:
-        st.error("indicator_df에 S/Z/GAP/QUANT/STD 관련 컬럼이 없습니다.")
-        st.write("현재 indicator_df.columns 예시:", list(indicator_df.columns)[:20])
-        return
-
-    metric = st.selectbox("지표를 선택하세요", available, index=0)
-
-    # -------------------------
-    # DF 구성 (종목코드, 종목명 + 날짜별 값)
-    # -------------------------
-    df_metric = indicator_df[["종목코드", "종목명"]].copy()
-
-    for lbl in selected_labels:
-        col_key = (lbl, metric)
-        if col_key in indicator_df.columns:
-            df_metric[lbl] = indicator_df[col_key]
-        else:
-            df_metric[lbl] = None
-
-    # 값 포맷팅
-    def _format_plain(v):
-        val = pd.to_numeric(v, errors="coerce")
-        if pd.isna(val):
-            return "-"
-        return f"{val:.0f}"
-
-    def _format_std_cell(v):
-        val = pd.to_numeric(v, errors="coerce")
-        if pd.isna(val):
-            return "-"
-        return f"{val:.2f}"
-
-    if metric == "STD":
-        formatter = _format_std_cell
-    elif metric.startswith("S"):
-        formatter = _format_s_cell
-    elif metric.startswith("Z"):
-        formatter = _format_z_cell
-    else:
-        formatter = _format_plain
-
-    for lbl in selected_labels:
-        if lbl in df_metric.columns:
-            df_metric[lbl] = df_metric[lbl].apply(formatter)
-
-    # 🔍 필터 + 정렬
-    st.markdown("### 🔍 필터 옵션 (지표별)")
-    c1, c2 = st.columns(2)
-    with c1:
-        search_metric = st.text_input("🔎 종목명/종목코드 검색", key="search_metric")
-    with c2:
-        sort_metric = st.selectbox("정렬 기준", ["종목코드", "종목명"], key="sort_metric")
-
-    df_filtered = df_metric.copy()
-    if search_metric:
-        df_filtered = df_filtered[
-            df_filtered["종목명"].astype(str).str.contains(search_metric, case=False)
-            | df_filtered["종목코드"].astype(str).str.contains(search_metric, case=False)
-        ]
-
-    df_filtered = df_filtered.sort_values(by=sort_metric).reset_index(drop=True)
-
-    # 날짜 범위 안내
-    if selected_labels:
-        oldest_label = selected_labels[0]
-        latest_label = selected_labels[-1]
-        st.info(
-            f"📅 지표별 표시 범위: **{oldest_label} ~ {latest_label}** "
-            f"(최근 {len(selected_labels)}일)"
-        )
-
-    # 테이블 출력
-    st.markdown(f"### 📋 {metric} · 추이")
-
-    column_config = {
-        "종목코드": st.column_config.TextColumn("종목코드", width="small", pinned="left"),
-        "종목명": st.column_config.TextColumn("종목명", width="small", pinned="left"),
-    }
-    for lbl in selected_labels:
-        if lbl in df_filtered.columns:
-            column_config[lbl] = st.column_config.TextColumn(lbl)
-
-    st.dataframe(
-        df_filtered,
-        use_container_width=True,
-        height=600,
-        hide_index=True,
-        column_config=column_config,
-    )
-
-    # 🔥 과거 확장 버튼 (지표별)
-    global total_days
-    if st.button("⬅ 과거 10일 더보기(지표별)", disabled=(total_days <= st.session_state.show_days)):
-        st.session_state.show_days = min(st.session_state.show_days + 10, total_days)
-        st.rerun()
-
-
-def render_raw_view(close_df, close_range_msg, total_close_days):
-    """
-    3️⃣ 원자료(종가) 탭
-    - 종목코드/종목명 + 날짜별 종가
-    """
-    if close_df is None:
-        st.warning("⚠️ 원자료(종가) 데이터를 불러올 수 없습니다.")
-        return
-
-    st.markdown("### 🔍 필터 옵션 (원자료)")
-    r1, r2 = st.columns(2)
-    with r1:
-        search_raw = st.text_input("🔎 종목명/종목코드 검색", key="search_raw")
-    with r2:
-        sort_raw = st.selectbox("정렬 기준", ["종목코드", "종목명"], key="sort_raw")
-
-    df_raw = close_df.copy()
-
-    if search_raw:
-        df_raw = df_raw[
-            df_raw["종목코드"].astype(str).str.contains(search_raw, case=False) |
-            df_raw["종목명"].astype(str).str.contains(search_raw, case=False)
-        ]
-
-    df_raw = df_raw.sort_values(by=sort_raw)
-
-    st.info(close_range_msg)
-
-    # 날짜 컬럼 추출
-    date_cols = [c for c in df_raw.columns if c not in ["종목코드", "종목명"]]
-
-    # 컬럼 순서 고정
-    df_raw = df_raw[["종목코드", "종목명"] + date_cols]
-
-    # 날짜 컬럼 숫자 변환
-    for c in date_cols:
-        df_raw[c] = pd.to_numeric(df_raw[c], errors="coerce")
-
-    column_config = {
-        "종목코드": st.column_config.TextColumn("종목코드", width="small", pinned="left"),
-        "종목명": st.column_config.TextColumn("종목명", width="small", pinned="left"),
-    }
-    for c in date_cols:
-        column_config[c] = st.column_config.NumberColumn(
-            c,
-            format="%.0f",
-        )
-
-    st.dataframe(
-        df_raw,
-        use_container_width=True,
-        height=600,
-        hide_index=True,
-        column_config=column_config,
-    )
-
-    # 🔥 과거 확장 버튼 (원자료)
-    if st.button("⬅ 과거 10일 더보기(종가)", disabled=(total_close_days <= st.session_state.show_days_raw)):
-        st.session_state.show_days_raw = min(st.session_state.show_days_raw + 10, total_close_days)
-        st.rerun()
-
-
-# ======================================
-# 4. 엑셀 파일 매핑(JSON) 로드
-# ======================================
-try:
-    with open(JSON_PATH, "r", encoding="utf-8") as f:
-        EXCEL_MAP = json.load(f)
-    if not isinstance(EXCEL_MAP, dict) or not EXCEL_MAP:
-        st.error("stock_files.json 형식이 잘못되었거나 비어 있습니다.")
-        st.stop()
-except FileNotFoundError:
-    st.error("stock_files.json 파일을 찾을 수 없습니다.")
-    st.stop()
-except Exception as e:
-    st.error(f"stock_files.json 읽기 오류: {e}")
-    st.stop()
-
-categories = list(EXCEL_MAP.keys())
-if st.session_state.selected_category not in categories:
-    st.session_state.selected_category = categories[0]
-
-# ======================================
-# 5. 상단: 네 개 카테고리 선택 버튼 (라디오, 가로)
-# ======================================
-st.markdown("### 📂 조회할 주식 그룹 선택")
-
-selected_category = st.radio(
-    "주식 그룹",
-    categories,
-    index=categories.index(st.session_state.selected_category),
-    horizontal=True,
-    label_visibility="collapsed",
-)
-st.session_state.selected_category = selected_category
-selected_filename = EXCEL_MAP[selected_category]
-excel_path = Path(selected_filename)
-
-#st.markdown(f"#### 현재: `{selected_category}`")
-
-# ======================================
-# 6. 사이드바: 선택 파일 다운로드 + 전체 갱신 버튼
-# ======================================
-with st.sidebar:
-    st.markdown("### 📁 현재 선택 파일")
-    st.write(f"`{selected_filename}`")
-
-    if excel_path.exists():
-        with open(excel_path, "rb") as f:
-            st.download_button(
-                label="📥 선택 파일 다운로드",
-                data=f,
-                file_name=excel_path.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_excel",
-            )
-    else:
-        st.warning(f"`{selected_filename}` 파일이 아직 생성되지 않았습니다.")
-
-    st.markdown("---")
-    if st.button("🔄 네 개 파일 전체 데이터 갱신"):
-        st.session_state.run_update = True
-
-# ======================================
-# 7. 데이터 갱신 실행 (외부 스크립트 호출)
-# ======================================
-if st.session_state.run_update:
-    with st.sidebar:
-        st.subheader("진행 상황")
-        pb = st.progress(0)
-        msg = st.empty()
-
-    scripts = [
-        ("run_all_scores.py", "4개 엑셀 S/Z + GAP/QUANT/STD 계산"),
+    sheet_configs = [
+        ('시가', 'open'),
+        ('고가', 'high'),
+        ('저가', 'low'),
+        ('종가', 'close'),
+        ('거래량', 'volume')
     ]
 
-    for idx, (sc, desc) in enumerate(scripts):
-        msg.write(f"{desc} 실행 중...")
-        try:
-            result = subprocess.run(
-                [sys.executable, sc], capture_output=True, text=True, timeout=1800
-            )
-            if result.returncode == 0:
-                st.sidebar.success(f"{desc} 완료")
-            else:
-                st.sidebar.error(f"{desc} 실패")
-                st.sidebar.code(result.stderr[:500])
-        except Exception as e:
-            st.sidebar.error(f"{desc} 오류 발생: {e}")
+    for sheet_name, field_name in sheet_configs:
+        # 기존 시트 여부
+        if sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            existing_dates = []
+            for col in range(3, sheet.max_column + 1):
+                val = sheet.cell(row=1, column=col).value
+                try:
+                    existing_dates.append(int(val))
+                except Exception:
+                    continue
 
-        pb.progress((idx + 1) / len(scripts))
-
-    st.session_state.data_loaded = True
-    st.session_state.run_update = False
-    st.rerun()
-
-# ======================================
-# 8. 선택된 엑셀 파일 로드
-# ======================================
-if not excel_path.exists():
-    st.error(f"`{selected_filename}` 파일을 찾지 못했습니다. "
-             "왼쪽의 '네 개 파일 전체 데이터 갱신' 버튼으로 먼저 데이터를 생성해 주세요.")
-    st.stop()
-
-excel_file = excel_path
-wb = openpyxl.load_workbook(excel_file, data_only=True)
-
-# ======================================
-# 9. 종목 정보 로딩 (종목 시트)
-# ======================================
-stock_info = {}
-if "종목" in wb.sheetnames:
-    ws = wb["종목"]
-    for r in ws.iter_rows(min_row=2, max_col=2):
-        name = r[0].value
-        code = r[1].value
-        if code and name:
-            stock_info[code] = name
-
-# ======================================
-# 10. 종합(Z20/Z60/S/GAP/QUANT/STD) 데이터 로딩
-# ======================================
-sheet_names = ["z20", "z60", "z120", "s20", "s60", "s120", "gap", "quant", "std"]
-
-base_ws = None
-for s in sheet_names:
-    if s in wb.sheetnames:
-        base_ws = wb[s]
-        break
-
-indicator_df = None
-indicator_date_infos = []
-total_days = 0
-selected_labels = []
-indicator_range_msg = ""
-
-if base_ws:
-    max_col = base_ws.max_column
-
-    # 기준 시트에서 날짜 헤더 수집 (1행, 3열~)
-    for col in range(3, max_col + 1):
-        raw = base_ws.cell(row=1, column=col).value
-        if raw is None:
-            continue
-        dt = _to_datetime(raw)
-        label = format_excel_date(raw)
-        indicator_date_infos.append((col, raw, dt, label))
-
-    indicator_date_infos = sorted(
-        indicator_date_infos,
-        key=lambda x: (x[2] is None, x[2] or datetime.min)
-    )
-
-    total_days = len(indicator_date_infos)
-
-    show_days = min(st.session_state.show_days, total_days)
-    start_idx = total_days - show_days
-    selected_infos = indicator_date_infos[start_idx:]
-    selected_labels = [lbl for _, _, _, lbl in selected_infos]
-
-    oldest_label = selected_infos[0][3]
-    latest_label = selected_infos[-1][3]
-    indicator_range_msg = (
-        f"📅 종합 표시 범위: **{oldest_label} ~ {latest_label}** "
-        f"(최근 {show_days}일 / 전체 {total_days}일)"
-    )
-
-    # 종목별 데이터 딕셔너리 구성
-    data_dict = {code: {"종목코드": code, "종목명": name}
-                 for code, name in stock_info.items()}
-
-    # 시트별 데이터 채우기 (날짜 문자열 기준 매칭)
-    for s in sheet_names:
-        if s not in wb.sheetnames:
-            continue
-
-        ws = wb[s]
-        max_row_s = ws.max_row
-        max_col_s = ws.max_column
-
-        label_to_col = {}
-        for col in range(3, max_col_s + 1):
-            raw = ws.cell(row=1, column=col).value
-            if raw is None:
-                continue
-            lbl = format_excel_date(raw)
-            label_to_col[lbl] = col
-
-        for r in range(2, max_row_s + 1):
-            code = ws.cell(row=r, column=2).value
-            if code not in data_dict:
-                continue
-
-            for lbl in selected_labels:
-                col_idx = label_to_col.get(lbl)
-                if col_idx is None:
-                    val = None
+            existing_data = {}
+            for row in range(2, sheet.max_row + 1):
+                name = sheet.cell(row=row, column=1).value
+                code = sheet.cell(row=row, column=2).value
+                if not name or not code:
+                    continue
+                code_str = str(code).strip()
+                if market == "KR":
+                    code_key = code_str.zfill(6)
                 else:
-                    val = ws.cell(row=r, column=col_idx).value
+                    code_key = code_str
 
-                data_dict[code][(lbl, s.upper())] = val
+                values = {}
+                for col_idx, date_int in enumerate(existing_dates, 3):
+                    values[str(date_int)] = sheet.cell(row=row, column=col_idx).value
+                existing_data[code_key] = {'name': name, 'values': values}
+        else:
+            sheet = wb.create_sheet(sheet_name)
+            existing_dates = []
+            existing_data = {}
 
-    indicator_df = pd.DataFrame.from_dict(data_dict, orient="index").reset_index(drop=True)
+        merged_dates = set(existing_dates)
+        for stock_data in data_list:
+            if stock_data['history']:
+                for daily in stock_data['history']:
+                    try:
+                        merged_dates.add(int(daily['date']))
+                    except Exception:
+                        continue
 
-else:
-    indicator_df = None
+        sorted_dates_all = sorted(list(merged_dates))
 
-# ======================================
-# 11. 원자료(종가) 데이터 로딩
-# ======================================
-close_df = None
-close_date_infos = []
-total_close_days = 0
-close_range_msg = ""
+        # 헤더
+        sheet.cell(row=1, column=1, value='종목명')
+        sheet.cell(row=1, column=2, value='종목코드')
+        for col_idx, date_int in enumerate(sorted_dates_all, 3):
+            cell = sheet.cell(row=1, column=col_idx)
+            cell.value = date_int
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
 
-if "종가" in wb.sheetnames:
-    ws = wb["종가"]
-    max_col_c = ws.max_column
+        for col_idx in (1, 2):
+            cell = sheet.cell(row=1, column=col_idx)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
 
-    # 날짜 헤더
-    for col in range(3, max_col_c + 1):
-        raw = ws.cell(row=1, column=col).value
-        if raw is None:
-            continue
+        # 종목 코드 전체 집합
+        all_codes = set(existing_data.keys())
+        for stock_data in data_list:
+            all_codes.add(stock_data['code'])
 
-        dt = _to_datetime(raw)
-
-        if dt is None:
-            digits = "".join(ch for ch in str(raw) if ch.isdigit())
-            if len(digits) == 8:
-                dt = datetime.strptime(digits, "%Y%m%d")
-
-        if dt is None:
-            continue
-
-        label = dt.strftime("%Y.%m.%d.")
-        close_date_infos.append((col, raw, dt, label))
-
-    close_date_infos = sorted(
-        close_date_infos,
-        key=lambda x: (x[2] is None, x[2] or datetime.min)
-    )
-
-    total_close_days = len(close_date_infos)
-
-    show_raw = min(st.session_state.show_days_raw, total_close_days)
-    start_idx = total_close_days - show_raw
-    selected_close_infos = close_date_infos[start_idx:]
-
-    oldest_label = selected_close_infos[0][3]
-    latest_label = selected_close_infos[-1][3]
-
-    close_range_msg = (
-        f"📅 종가 표시 범위: **{oldest_label} ~ {latest_label}** "
-        f"(최근 {show_raw}일 / 전체 {total_close_days}일)"
-    )
-
-    close_dict = {code: {"종목명": name, "종목코드": code}
-                  for code, name in stock_info.items()}
-
-    max_row_c = ws.max_row
-
-    for r in range(2, max_row_c + 1):
-        code = ws.cell(row=r, column=2).value
-        if code not in close_dict:
-            continue
-
-        for col_idx, raw, dt, label in selected_close_infos:
-            val = ws.cell(row=r, column=col_idx).value
-            close_dict[code][label] = val
-
-    close_df = pd.DataFrame.from_dict(close_dict, orient="index").reset_index(drop=True)
-
-    # 컬럼 이름을 yyyy.mm.dd. 형식으로 통일
-    rename_map = {}
-    for col in close_df.columns:
-        if col in ["종목코드", "종목명"]:
-            continue
-        rename_map[col] = format_excel_date(col)
-
-    close_df = close_df.rename(columns=rename_map)
-
-# ======================================
-# 12. 지수(KOSPI/KOSDAQ/KOSPI200) 데이터 로딩
-# ======================================
-index_df = None
-
-if "지수" in wb.sheetnames and indicator_df is not None and selected_labels:
-    ws_idx = wb["지수"]
-    max_col_i = ws_idx.max_column
-
-    index_date_infos = []
-    for col in range(3, max_col_i + 1):
-        raw = ws_idx.cell(row=1, column=col).value
-        if raw is None:
-            continue
-
-        dt = _to_datetime(raw)
-        if dt is None:
-            digits = "".join(ch for ch in str(raw) if ch.isdigit())
-            if len(digits) == 8:
-                dt = datetime.strptime(digits, "%Y%m%d")
-        if dt is None:
-            continue
-
-        label = dt.strftime("%Y.%m.%d.")
-        index_date_infos.append((col, raw, dt, label))
-
-    label_to_col_idx = {label: col for col, raw, dt, label in index_date_infos}
-
-    index_rows = []
-    max_row_i = ws_idx.max_row
-
-    for r in range(2, max_row_i + 1):
-        name = ws_idx.cell(row=r, column=1).value
-        code = ws_idx.cell(row=r, column=2).value
-        if not name or not code:
-            continue
-
-        row_dict = {
-            "업종명": str(name),
-            "업종코드": str(code),
-        }
-
-        for lbl in selected_labels:
-            col_idx = label_to_col_idx.get(lbl)
-            if col_idx is None:
-                val = None
+        for row_idx, code in enumerate(sorted(all_codes), start=2):
+            # 이름
+            if code in existing_data:
+                name = existing_data[code]['name']
             else:
-                val = ws_idx.cell(row=r, column=col_idx).value
-            row_dict[lbl] = val
+                # data_list에서 찾기
+                name = next((s['name'] for s in data_list if s['code'] == code), code)
 
-        index_rows.append(row_dict)
+            sheet.cell(row=row_idx, column=1, value=name)
+            sheet.cell(row=row_idx, column=2, value=code)
 
-    if index_rows:
-        index_df = pd.DataFrame(index_rows)
+            # 기존 값
+            values = existing_data.get(code, {}).get('values', {})
 
-# ======================================
-# 13. 엑셀 파일 닫기
-# ======================================
-wb.close()
+            # 신규 값
+            new_values = {}
+            stock_hist = next((s for s in data_list if s['code'] == code), None)
+            if stock_hist and stock_hist['history']:
+                for daily in stock_hist['history']:
+                    try:
+                        new_values[str(int(daily['date']))] = daily[field_name]
+                    except Exception:
+                        continue
 
-# ======================================
-# 14. 탭 구성 및 렌더링
-# ======================================
-tab_total, tab_metric, tab_raw = st.tabs(["1️⃣ 종합", "2️⃣ 지표별", "3️⃣ 원자료"])
+            # 날짜별로 값 입력
+            for col_idx, date_int in enumerate(sorted_dates_all, 3):
+                key = str(date_int)
+                val = new_values.get(key, values.get(key, ''))
+                sheet.cell(row=row_idx, column=col_idx, value=val)
 
-with tab_total:
-    if indicator_df is None:
-        st.warning("⚠️ 종합 데이터를 불러올 수 없습니다.")
+        # 열 너비
+        sheet.column_dimensions['A'].width = 20
+        sheet.column_dimensions['B'].width = 14
+        for col_idx in range(3, len(sorted_dates_all) + 3):
+            col_letter = get_column_letter(col_idx)
+            sheet.column_dimensions[col_letter].width = 12
+
+    wb.save(filename)
+    print(f"\n✅ 엑셀 파일 저장 완료: {filename}")
+
+
+def get_latest_date_from_sheet(filename, sheet_name):
+    """지정 시트(종가/거래량 등)에서 가장 최신 날짜를 'YYYYMMDD' 문자열로 반환"""
+    try:
+        wb = openpyxl.load_workbook(filename)
+        if sheet_name not in wb.sheetnames:
+            return None
+        sheet = wb[sheet_name]
+
+        dates = [sheet.cell(row=1, column=col).value for col in range(3, sheet.max_column + 1)]
+        dates_dt = []
+        for d in dates:
+            try:
+                dates_dt.append(datetime.strptime(str(d), '%Y%m%d'))
+            except Exception:
+                pass
+        if not dates_dt:
+            return None
+        latest = max(dates_dt)
+        return latest.strftime('%Y%m%d')
+    except Exception as e:
+        print(f"❌ 날짜 추출 에러({filename}/{sheet_name}): {e}")
+        return None
+
+
+# =========================
+# 3. 지수(코스피/코스닥) 시트
+# =========================
+
+def fetch_index_history(access_token, domain, index_code, app_key, app_secret,
+                        start_date, end_date):
+    """
+    업종지수 기간별 시세 조회 (일별)
+    - index_code: 0001(KOSPI), 1001(KOSDAQ), 2001(KOSPI200)
+    """
+    endpoint = f"{domain}/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice"
+
+    params = {
+        "fid_cond_mrkt_div_code": "U",
+        "fid_input_iscd": index_code,
+        "fid_input_date_1": start_date,
+        "fid_input_date_2": end_date,
+        "fid_period_div_code": "D",
+    }
+
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {access_token}",
+        "appkey": app_key,
+        "appsecret": app_secret,
+        "tr_id": "FHKUP03500100",
+        "custtype": "P",
+    }
+
+    try:
+        resp = requests.get(endpoint, headers=headers, params=params, timeout=10)
+
+        if resp.status_code != 200:
+            print(f"❌ 업종지수 HTTP {resp.status_code} 오류 ({index_code})")
+            print(resp.text)
+            return None
+
+        data = resp.json()
+        rows = data.get("output2")
+
+        if not rows:
+            print(f"❌ 업종지수 데이터 없음 ({index_code})")
+            return None
+
+        history = []
+        for row in rows:
+            history.append({
+                "date": row.get("stck_bsop_date", ""),
+                "index_value": row.get("bstp_nmix_prpr"),
+                "open": row.get("bstp_nmix_oprc"),
+                "high": row.get("bstp_nmix_hgpr"),
+                "low": row.get("bstp_nmix_lwpr"),
+            })
+
+        history.sort(key=lambda x: x["date"])
+        return history
+
+    except Exception as e:
+        print(f"❌ 업종지수 조회 중 에러 ({index_code}): {e}")
+        return None
+
+
+def update_index_sheet(access_token, domain, app_key, app_secret,
+                       filename="KR_Stocks_Individual.xlsx"):
+    """
+    파일의 '지수' 시트 업데이트
+    - 없으면: 최근 100일치 KOSPI/KOSDAQ/KOSPI200 생성
+    - 있으면: 마지막 날짜 이후 ~ 오늘까지 추가
+    """
+    try:
+        wb = openpyxl.load_workbook(filename)
+    except FileNotFoundError:
+        wb = openpyxl.Workbook()
+        if 'Sheet' in wb.sheetnames:
+            wb.remove(wb['Sheet'])
+
+    indices = [
+        ("KOSPI", "0001"),
+        ("KOSDAQ", "1001"),
+        ("KOSPI200", "2001"),
+    ]
+
+    today = datetime.now()
+    today_str = today.strftime('%Y%m%d')
+
+    # A. 시트 없는 경우
+    if '지수' not in wb.sheetnames:
+        sheet = wb.create_sheet('지수')
+
+        end_date = today_str
+        start_date = (today - timedelta(days=100)).strftime('%Y%m%d')
+        print(f"\n📈 [지수] 최초 생성: {start_date} ~ {end_date}")
+
+        index_data = {}
+        all_dates = set()
+
+        for name, code in indices:
+            print(f"  ▶ {name} ({code}) 조회 중...")
+            history = fetch_index_history(
+                access_token, domain, code, app_key, app_secret,
+                start_date, end_date
+            )
+            if not history:
+                print(f"    • {name} 데이터 없음")
+                continue
+
+            values = {}
+            for h in history:
+                d = h["date"]
+                v = h["index_value"]
+                if not d or v is None:
+                    continue
+                values[d] = float(v)
+                all_dates.add(d)
+
+            index_data[code] = {
+                "name": name,
+                "code": code,
+                "values": values
+            }
+            print(f"    • {len(values)}일치 데이터 확보")
+
+            time.sleep(0.5)
+
+        if not index_data or not all_dates:
+            print("\n❌ 지수 데이터가 없어 저장하지 않습니다.")
+            wb.save(filename)
+            return
+
+        sorted_dates = sorted(all_dates)
+
+        # 헤더
+        sheet.cell(row=1, column=1, value='업종명')
+        sheet.cell(row=1, column=2, value='업종코드')
+        sheet.cell(row=1, column=1).font = Font(bold=True)
+        sheet.cell(row=1, column=2).font = Font(bold=True)
+        sheet.cell(row=1, column=1).fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+        sheet.cell(row=1, column=2).fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+
+        for col_idx, date_str in enumerate(sorted_dates, 3):
+            cell = sheet.cell(row=1, column=col_idx)
+            cell.value = date_str
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+
+        # 데이터
+        for row_idx, code in enumerate(sorted(index_data.keys()), start=2):
+            info = index_data[code]
+            sheet.cell(row=row_idx, column=1, value=info["name"])
+            sheet.cell(row=row_idx, column=2, value=info["code"])
+
+            values = info["values"]
+            for col_idx, date_str in enumerate(sorted_dates, 3):
+                val = values.get(date_str, "")
+                sheet.cell(row=row_idx, column=col_idx, value=val)
+
+        sheet.column_dimensions['A'].width = 15
+        sheet.column_dimensions['B'].width = 12
+        for col_idx in range(3, len(sorted_dates) + 3):
+            col_letter = get_column_letter(col_idx)
+            sheet.column_dimensions[col_letter].width = 12
+
+        wb.save(filename)
+        print(f"\n✅ '지수' 시트 최초 생성 완료: {filename}")
+        return
+
+    # B. 시트 있는 경우 → 추가
+    sheet = wb['지수']
+    print("\n📈 [지수] 기존 시트 업데이트 시작")
+
+    existing_dates = []
+    for col in range(3, sheet.max_column + 1):
+        val = sheet.cell(row=1, column=col).value
+        if val:
+            existing_dates.append(str(val))
+
+    existing_data = {}
+    for row in range(2, sheet.max_row + 1):
+        name = sheet.cell(row=row, column=1).value
+        code = sheet.cell(row=row, column=2).value
+        if not code:
+            continue
+        code_str = str(code).strip()
+        values = {}
+        for idx, date_str in enumerate(existing_dates, 3):
+            values[date_str] = sheet.cell(row=row, column=idx).value
+        existing_data[code_str] = {"name": name, "values": values}
+
+    latest = get_latest_date_from_sheet(filename, "지수")
+    if latest:
+        start_dt = datetime.strptime(latest, "%Y%m%d") + timedelta(days=1)
+        start_date = start_dt.strftime("%Y%m%d")
+        print(f"  • 마지막 날짜: {latest} → 추가 조회 시작일: {start_date}")
     else:
-        render_total_view(
-            indicator_df,
-            selected_labels,
-            indicator_range_msg,
-            total_days,
-            index_df=index_df,
+        start_date = (today - timedelta(days=100)).strftime("%Y%m%d")
+        print(f"  • 기존 날짜 없음 → {start_date} ~ {today_str} 재조회")
+
+    end_date = today_str
+    if datetime.strptime(start_date, "%Y%m%d") > datetime.strptime(end_date, "%Y%m%d"):
+        print("  • 추가할 지수 데이터가 없습니다. (이미 최신)")
+        return
+
+    new_index_data = {}
+    all_dates = set(existing_dates)
+
+    for name, code in indices:
+        print(f"  ▶ {name} ({code}) 신규 조회: {start_date} ~ {end_date}")
+        history = fetch_index_history(
+            access_token, domain, code, app_key, app_secret,
+            start_date, end_date
+        )
+        if not history:
+            print(f"    • {name} 추가 데이터 없음")
+            continue
+
+        values = {}
+        for h in history:
+            d = h["date"]
+            v = h["index_value"]
+            if not d or v is None:
+                continue
+            values[d] = float(v)
+            all_dates.add(d)
+
+        new_index_data[code] = {
+            "name": name,
+            "code": code,
+            "values": values
+        }
+        print(f"    • {len(values)}일치 신규 데이터 확보")
+
+        time.sleep(0.5)
+
+    if not new_index_data:
+        print("  • 신규 지수 데이터가 없어 업데이트하지 않습니다.")
+        return
+
+    merged_dates = sorted(all_dates)
+
+    # 헤더
+    sheet.cell(row=1, column=1, value='업종명')
+    sheet.cell(row=1, column=2, value='업종코드')
+    sheet.cell(row=1, column=1).font = Font(bold=True)
+    sheet.cell(row=1, column=2).font = Font(bold=True)
+    sheet.cell(row=1, column=1).fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+    sheet.cell(row=1, column=2).fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+
+    for col_idx, date_str in enumerate(merged_dates, 3):
+        cell = sheet.cell(row=1, column=col_idx)
+        cell.value = date_str
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+
+    all_codes = set(existing_data.keys()) | set([code for _, code in indices])
+
+    for row_idx, code in enumerate(sorted(all_codes), start=2):
+        if code in existing_data:
+            name = existing_data[code]["name"]
+        else:
+            name = next((n for (n, c) in indices if c == code), code)
+
+        sheet.cell(row=row_idx, column=1, value=name)
+        sheet.cell(row=row_idx, column=2, value=code)
+
+        old_values = existing_data.get(code, {}).get("values", {})
+        new_values = new_index_data.get(code, {}).get("values", {})
+
+        for col_idx, date_str in enumerate(merged_dates, 3):
+            val = new_values.get(date_str, old_values.get(date_str, ""))
+            sheet.cell(row=row_idx, column=col_idx, value=val)
+
+    sheet.column_dimensions['A'].width = 15
+    sheet.column_dimensions['B'].width = 12
+    for col_idx in range(3, len(merged_dates) + 3):
+        col_letter = get_column_letter(col_idx)
+        sheet.column_dimensions[col_letter].width = 12
+
+    wb.save(filename)
+    print(f"\n✅ '지수' 시트 업데이트 완료: {filename}")
+
+
+# =========================
+# 4. 카테고리별 처리 래퍼
+# =========================
+
+def fetch_kr_wrapper(access_token, domain, symbol, start_date, end_date,
+                     app_key, app_secret):
+    """국내(개별+ETF) 모두 동일 API 사용"""
+    return fetch_stock_daily_history(
+        access_token, domain, symbol, start_date, end_date,
+        app_key=app_key, app_secret=app_secret
+    )
+
+
+def fetch_us_wrapper(access_token, domain, symbol, start_date, end_date,
+                     app_key, app_secret):
+    """
+    미국(개별+ETF) 모두 해외 기간별 시세 API 사용
+    - 여기서는 일단 NASDAQ("NAS") 기준으로 호출
+      (나중에 필요하면 엑셀에 EXCD 컬럼 추가해서 확장)
+    """
+    return fetch_overseas_daily_history(
+        access_token, domain, market_code="NAS", symbol=symbol,
+        start_date=start_date, end_date=end_date,
+        app_key=app_key, app_secret=app_secret
+    )
+
+
+def process_one_file(excel_filename, fetch_func, app_key, app_secret, domain,
+                     access_token, market="KR", update_index=False):
+    """
+    엑셀 파일 1개 처리:
+    - 종목 목록 로드
+    - 종가/거래량 시트 기준으로 날짜 범위 결정
+    - fetch_func으로 각 종목 히스토리 가져오기
+    - 시가/고가/저가/종가/거래량 시트 저장
+    - 필요 시 지수 시트 업데이트
+    """
+    stocks = load_stock_list(excel_filename, market=market)
+    if not stocks:
+        return
+
+    latest_close = get_latest_date_from_sheet(excel_filename, "종가")
+    latest_amount = get_latest_date_from_sheet(excel_filename, "거래량")
+
+    today = datetime.now()
+    today_str = today.strftime('%Y%m%d')
+
+    if latest_close and latest_amount:
+        latest_str = max(latest_close, latest_amount)
+        start_dt = datetime.strptime(latest_str, '%Y%m%d') + timedelta(days=1)
+        start_date = start_dt.strftime('%Y%m%d')
+        print(f"\n📅 [{excel_filename}] 추가 조회: {start_date} ~ {today_str}")
+    else:
+        end_dt = today
+        start_date = (end_dt - timedelta(days=100)).strftime('%Y%m%d')
+        print(f"\n📅 [{excel_filename}] 전체 조회(최근 100일): {start_date} ~ {today_str}")
+
+    end_date = today_str
+
+    data_list = []
+    print(f"\n총 {len(stocks)}개 종목에 대해 조회합니다... ({excel_filename})")
+    for i, stock in enumerate(stocks, start=1):
+        print(f"  [{i}/{len(stocks)}] {stock['name']}({stock['code']}) ...", end='')
+
+        history = fetch_func(
+            access_token, domain,
+            stock['code'], start_date, end_date,
+            app_key, app_secret
         )
 
-with tab_metric:
-    if indicator_df is None:
-        st.warning("⚠️ 지표별 데이터를 불러올 수 없습니다.")
-    else:
-        render_metric_view(indicator_df, selected_labels)
+        if history:
+            print(f"성공 ({len(history)}일)")
+            data_list.append({
+                "name": stock['name'],
+                "code": stock['code'],
+                "history": history,
+            })
+        else:
+            print("실패 또는 추가 데이터 없음")
 
-with tab_raw:
-    if close_df is None:
-        st.warning("⚠️ 원자료(종가) 데이터를 불러올 수 없습니다.")
-    else:
-        render_raw_view(close_df, close_range_msg, total_close_days)
+        time.sleep(1)
 
-st.markdown("---")
-st.caption("Created by Alicia")
+    if data_list:
+        save_history_to_excel(data_list, filename=excel_filename, market=market)
+        if update_index and market == "KR":
+            update_index_sheet(
+                access_token=access_token,
+                domain=domain,
+                app_key=app_key,
+                app_secret=app_secret,
+                filename=excel_filename
+            )
+    else:
+        print(f"\n❌ [{excel_filename}] 저장할 데이터가 없습니다.")
+
+
+# =========================
+# 5. main
+# =========================
+
+def main():
+    print(f"\n=== 한국투자증권 API 주식/ETF 시세 히스토리 조회 ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ===")
+
+    secrets = load_api_secrets()
+    if not secrets:
+        return
+
+    app_key = secrets.get('api_key')
+    app_secret = secrets.get('api_secret')
+    domain = secrets.get('domain', 'https://openapi.koreainvestment.com:9443')
+
+    file_config = load_file_config('stock_file_map.json')
+    if not file_config:
+        return
+
+    print("\n🔄 토큰 발급 요청 중...")
+    token_data = get_token(app_key, app_secret, domain)
+    if not token_data:
+        print("\n❌ 토큰 발급 실패")
+        return
+    access_token = token_data['access_token']
+
+    # 카테고리별 설정
+    # - market: 코드 처리(KR: zfill, US: 그대로)
+    # - fetch_func: 어떤 API 호출할지
+    # - update_index: 지수 시트 생성/업데이트 여부
+    category_settings = {
+        "KR_Stocks_Individual": {"market": "KR", "fetch_func": fetch_kr_wrapper, "update_index": True},
+        "KR_Stocks_ETF":        {"market": "KR", "fetch_func": fetch_kr_wrapper, "update_index": False},
+        "US_Stocks_Individual": {"market": "US", "fetch_func": fetch_us_wrapper, "update_index": False},
+        "US_Stocks_ETF":        {"market": "US", "fetch_func": fetch_us_wrapper, "update_index": False},
+    }
+
+    for category_name, excel_filename in file_config.items():
+        print("\n=======================================")
+        print(f"📂 카테고리: {category_name}")
+        print(f"📊 파일: {excel_filename}")
+        print("=======================================")
+
+        cfg = category_settings.get(category_name)
+        if not cfg:
+            print(f"⚠️ {category_name} 에 대한 설정이 없습니다. 건너뜀.")
+            continue
+
+        process_one_file(
+            excel_filename=excel_filename,
+            fetch_func=cfg["fetch_func"],
+            app_key=app_key,
+            app_secret=app_secret,
+            domain=domain,
+            access_token=access_token,
+            market=cfg["market"],
+            update_index=cfg["update_index"]
+        )
+
+
+if __name__ == "__main__":
+    main()
