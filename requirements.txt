@@ -1,4 +1,7 @@
-requests
+bcrypt
 pandas
 numpy
 openpyxl
+requests
+streamlit
+
