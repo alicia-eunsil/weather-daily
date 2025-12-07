@@ -12,7 +12,8 @@ import json  # 🔥 4개 엑셀 매핑용
 # ======================================
 # 0. 인증 (간단 비밀번호)
 # ======================================
-ACCESS_CODE_HASH = b"$2b$12$gDBpQYK.g938H.8cNwLeUu/VRidCP1GxqusJiEQzVnvaSrG4CBE6K"
+ACCESS_CODE_HASH = b"$2b$12$wi5xD9WCCbQHBt.1UPHMJuhWkBLC2XG59gC1b4SdEr7TsTcI50atu"
+
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
