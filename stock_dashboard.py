@@ -39,7 +39,7 @@ if not st.session_state["authenticated"]:
 # ======================================
 # 페이지 설정
 # ======================================
-st.set_page_config(page_title="주식 데이터 대시보드", page_icon="📈", layout="wide")
+st.set_page_config(page_title="올인원 주식 대시보드", page_icon="🚀", layout="wide")
 
 # ======================================
 # 1. 전역 상태 변수
