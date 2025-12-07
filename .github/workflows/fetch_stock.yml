@@ -46,9 +46,9 @@ jobs:
       - name: Run stock scripts (4 Excel files 전체 처리)
         run: |
           # 1) 국내/해외 개별 + ETF 원자료(시가/고가/저가/종가/거래량 + 지수) 수집
-          python "_stock_history.py"
+          python "stock_history.py"
           # 2) 4개 엑셀에 대해 S/Z + GAP/QUANT/STD 계산 (_totalSZ.py + _extra_scores.py 내부에서 호출)
-          python "_run_all_scores.py"
+          python "run_all_scores.py"
 
       - name: Commit & push if changed
         run: |
