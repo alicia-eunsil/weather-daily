@@ -219,7 +219,10 @@ def load_stock_list(filename, market="KR"):
     """
     try:
         wb = openpyxl.load_workbook(filename)
-        sheet = wb.active
+        if "종목" not in wb.sheetnames:
+            print(f"\n❌ Excel 파일({filename})에 '종목' 시트가 없습니다.")
+            return None
+        sheet = wb["종목"]
 
         stocks = []
         for row in sheet.iter_rows(min_row=2):  # 헤더 제외
