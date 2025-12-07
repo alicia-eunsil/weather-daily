@@ -80,9 +80,16 @@ def _to_datetime(v):
         return datetime(v.year, v.month, v.day)
 
     if isinstance(v, (int, float)):
+        iv = int(v)
+        digits = str(iv)
+        if len(digits) == 8 and digits.isdigit():
+            try:
+                return datetime.strptime(digits, "%Y%m%d")
+            except:
+                pass
         base = datetime(1899, 12, 30)
         try:
-            return base + timedelta(days=int(v))
+            return base + timedelta(days=iv)
         except:
             return None
 
@@ -546,7 +553,7 @@ if st.session_state.run_update:
         msg = st.empty()
 
     scripts = [
-        ("_run_all_scores.py", "4개 엑셀 S/Z + GAP/QUANT/STD 계산"),
+        ("run_all_score.py", "4개 엑셀 S/Z + GAP/QUANT/STD 계산"),
     ]
 
     for idx, (sc, desc) in enumerate(scripts):
