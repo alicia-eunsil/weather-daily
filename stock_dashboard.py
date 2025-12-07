@@ -553,7 +553,7 @@ if st.session_state.run_update:
         msg = st.empty()
 
     scripts = [
-        ("run_all_score.py", "4개 엑셀 S/Z + GAP/QUANT/STD 계산"),
+        ("run_all_scores.py", "4개 엑셀 S/Z + GAP/QUANT/STD 계산"),
     ]
 
     for idx, (sc, desc) in enumerate(scripts):
