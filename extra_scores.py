@@ -40,7 +40,7 @@ def get_close_data(filename):
             prices_numeric = []
             for p in prices:
                 try:
-                    prices_numeric.append(int(p) if p not in (None, '') else None)
+                    prices_numeric.append(float(p) if p not in (None, '') else None)
                 except (ValueError, TypeError):
                     prices_numeric.append(None)
             stocks.append({'name': name, 'code': code, 'prices': prices_numeric})
