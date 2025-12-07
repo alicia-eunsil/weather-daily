@@ -537,7 +537,7 @@ with st.sidebar:
         st.warning(f"`{selected_filename}` 파일이 아직 생성되지 않았습니다.")
 
     st.markdown("---")
-    if st.button("🔄 네 개 파일 전체 데이터 갱신"):
+    if st.button("🔄 전체 데이터 갱신"):
         st.session_state.run_update = True
 
 # ======================================
