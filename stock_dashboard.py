@@ -1,3 +1,9 @@
+"""
+File: stock_dashboard.py
+Version: v2.0.0
+Role: 계산된 주가 지표와 원자료를 조회하는 Streamlit 대시보드.
+"""
+
 import streamlit as st
 import subprocess
 import sys
@@ -9,15 +15,14 @@ from datetime import datetime, date, timedelta
 import json  # 🔥 4개 엑셀 매핑용
 
 # ======================================
-# 페이지 설정
+# 페이지 설정 (최초 UI 출력 전에 호출)
 # ======================================
 st.set_page_config(page_title="올인원 주식 대시보드", page_icon="🚀", layout="wide")
 
 # ======================================
 # 0. 인증 (간단 비밀번호)
 # ======================================
-ACCESS_CODE_HASH = b"$2b$12$wi5xD9WCCbQHBt.1UPHMJuhWkBLC2XG59gC1b4SdEr7TsTcI50atu"
-
+ACCESS_CODE_HASH = b"$2b$12$gDBpQYK.g938H.8cNwLeUu/VRidCP1GxqusJiEQzVnvaSrG4CBE6K"
 
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -252,9 +257,7 @@ def render_total_view(indicator_df, selected_labels, indicator_range_msg, total_
         for metric in ["GAP", "STD"]:
             col = (lbl, metric)
             if col in df_show.columns:
-                df_show[col] = df_show[col].apply(
-                    lambda v: "-" if pd.isna(pd.to_numeric(v, errors="coerce")) else v
-                )
+                df_show[col] = pd.to_numeric(df_show[col], errors="coerce")
 
         for m in ["QUANT"]:
             col = (lbl, m)
@@ -290,7 +293,7 @@ def render_total_view(indicator_df, selected_labels, indicator_range_msg, total_
 
     st.dataframe(
         df_show,
-        use_container_width=True,
+        width="stretch",
         height=600,
     )
 
@@ -407,7 +410,7 @@ def render_metric_view(indicator_df, selected_labels):
 
     st.dataframe(
         df_filtered,
-        use_container_width=True,
+        width="stretch",
         height=600,
         hide_index=True,
         column_config=column_config,
@@ -467,7 +470,7 @@ def render_raw_view(close_df, close_range_msg, total_close_days):
 
     st.dataframe(
         df_raw,
-        use_container_width=True,
+        width="stretch",
         height=600,
         hide_index=True,
         column_config=column_config,
@@ -537,7 +540,7 @@ with st.sidebar:
         st.warning(f"`{selected_filename}` 파일이 아직 생성되지 않았습니다.")
 
     st.markdown("---")
-    if st.button("🔄 전체 데이터 갱신"):
+    if st.button("🔄 네 개 파일 전체 데이터 갱신"):
         st.session_state.run_update = True
 
 # ======================================
